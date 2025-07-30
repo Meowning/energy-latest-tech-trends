@@ -48,23 +48,49 @@
 
 - 6개월 이전에 소식 받기를 중단하고 싶은 경우, 사이트에 방문하여 취소해야 함  
 
-- **계속 이용을 희망하는 경우, 이메일 재등록 필요**  
+- ***계속 이용을 희망하는 경우, 이메일 재등록 필요***  
 
 
 
-## 🏢 지원 및 참고 사이트
+## 🏢 지원 사이트
 
-에너지 관련 최신 기술 동향과 데이터를 참고하거나 지원을 받을 수 있는 주요 공공기관 사이트입니다.
+현재 알리미가 지원 중인 주요 공공기관 사이트입니다.
 
-| 기관명             | 주요 내용                         | 웹사이트                             |
-|------------------|---------------------------------|----------------------------------|
-| 한국에너지공단      | 에너지 효율, 신재생에너지 정책 및 지원 정보 | [energy.or.kr](https://www.energy.or.kr)       |
-| 한국전력공사        | 전력 산업 관련 최신 뉴스와 통계 자료         | [kepco.co.kr](https://home.kepco.co.kr)        |
-| 한국수력원자력      | 원자력 및 수력 발전 관련 공식 자료 및 보도자료  | [khnp.co.kr](https://www.khnp.co.kr)           |
-| 에너지경제연구원     | 에너지 산업 연구, 정책 보고서, 통계 제공       | [keri.org](https://www.keri.org)                |
-| 공공데이터포털       | 다양한 에너지 관련 공공 데이터 및 API 제공      | [data.go.kr](https://www.data.go.kr)            |
-| 산업통상자원부       | 에너지 정책 및 산업 동향 관련 정부 부처         | [motie.go.kr](https://www.motie.go.kr)          |
+| 번호 | 기관명                 | 수집 가능 여부 | 비고                              |
+|------|---------------------|------------|--------------------------------|
+| 1    | 한국원자력안전재단         | ✅          |                                |
+| 2    | 한국원자력산업협회         | ✅          |                                |
+| 3    | 한국수력원자력             | ❌          | **robots.txt 전체 차단**으로 수집 제외 |
+| 4    | 한수원 중앙연구원          | ❌          | **robots.txt 전체 차단**으로 수집 제외 |
+| 5    | 산업통상자원부             | ✅          |                                |
+| 6    | 에너지경제연구원           | ✅          |                                |
+| 7    | 한전경영연구원 (KEMRI)     | ✅          |                                |
+| 8    | 산업통상자원부             | ✅          |                                |
+| 9    | 한국원자력연구원 (KAERI)   | ✅          |                                |
+| 10   | 원자력안전위원회           | ✅          |                                |
+| 11   | 한국신재생에너지협회       | ❌          | **robots.txt 전체 차단**으로 수집 제외 |
+| 12   | 한국원자력협력재단         | ❌          | **robots.txt 전체 차단**으로 수집 제외 |
 
----
+> ⚠️ robots.txt로 인해 ***자동 수집 불가능한 자료는 수동 확인 필요***
 
-> _“필요한 데이터와 정보를 얻기 위한 공식 채널로 활용하세요.”_
+## 기술 스택
+### Backend
+<div>
+  <img src="https://img.shields.io/badge/python-3776AB?style=for-the-badge&logo=python&logoColor=white"> 
+  <img src="https://img.shields.io/badge/flask-000000?style=for-the-badge&logo=flask&logoColor=white">
+  <img src="https://img.shields.io/badge/mysql-4479A1?style=for-the-badge&logo=mysql&logoColor=white">
+</div>
+
+### Frontend
+<div>
+  <img src="https://img.shields.io/badge/node.js-339933?style=for-the-badge&logo=Node.js&logoColor=white">
+  <img src="https://img.shields.io/badge/vue.js-4FC08D?style=for-the-badge&logo=vue.js&logoColor=white"> 
+  <img src="https://img.shields.io/badge/Nginx-009639?logo=nginx&logoColor=white&style=for-the-badge">
+</div>
+
+### Tools
+<div>
+  <img src="https://img.shields.io/badge/Git-%23F05032.svg?style=for-the-badge&logo=git&logoColor=white">
+  <img src="https://img.shields.io/badge/github-181717?style=for-the-badge&logo=github&logoColor=white">
+  <img src="https://img.shields.io/badge/docker-%230db7ed.svg?style=for-the-badge&logo=docker&logoColor=white"> 
+</div>
