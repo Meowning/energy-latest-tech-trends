@@ -4,8 +4,6 @@
     alert(`입력된 이메일: ${email}`);
   };
 </script>
-
-<!-- 스타일 불러오기 -->
 <style>
   @import '../assets/styles/home.css';
 </style>
