@@ -1,89 +1,270 @@
-/* 반응형 전체 레이아웃 */
-body {
+@font-face {
+  font-family: 'KBO-Dia-Gothic';
+  src: url('https://fastly.jsdelivr.net/gh/projectnoonnu/noonfonts_2304-2@1.0/KBO-Dia-Gothic_medium.woff') format('woff');
+  font-weight: 500;
+  font-style: normal;
+}
+
+a {
+  text-decoration: none;
+}
+
+#app {
+  max-width: none !important;
+  width: 100vw !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* scroll-snap */
+html, body, #svelte, #app {
   margin: 0;
-  font-family: 'Segoe UI', sans-serif;
-  background-color: #f9f9f9;
-  color: #333;
+  padding: 0;
+  width: 100vw;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scroll-snap-type: y mandatory;
+  scroll-behavior: smooth;
+  font-family: sans-serif;
+  background: #f9f9f9;
+  color: #1c1c1e;
+  font-family: 'KBO-Dia-Gothic', sans-serif;
 }
 
-/* 히어로 섹션 */
-.hero {
+html::-webkit-scrollbar {
+  display: none;
+}
+
+.snap-section {
+  position: relative;
+  width: 100%;        /* 부모 width(=100vw) 꽉 채움 */
+  height: 100vh;
+  scroll-snap-align: start;
+  box-sizing: border-box;
+  overflow: hidden;
+  background: #f0f4f8;
+  padding: 0;
+}
+
+.content {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) translateY(20px);
+  opacity: 0;
+  transition: opacity 0.6s ease, transform 0.6s ease;
+  width: 100vw;
+  padding: 0 1rem;
+  box-sizing: border-box;
   text-align: center;
-  padding: 5rem 1rem 3rem;
-  background-color: #0057a0;
-  color: white;
+  color: inherit;
 }
 
-.hero h1 {
-  font-size: 2.5rem;
-  margin-bottom: 1rem;
+.content.visible {
+  transform: translate(-50%, -50%) translateY(0);
+  opacity: 1;
 }
 
-.hero p {
-  font-size: 1.2rem;
+@media (min-width: 600px) {
+  .content { width: 90vw; }
 }
 
-/* 기능 설명 */
-.features {
-  display: flex;
+@media (min-width: 1200px) {
+  .content { width: 80vw; }
+}
+
+/* transition */
+.main__action {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  opacity: 0;
+  transition: opacity 0.6s ease, transform 0.6s ease;
+  bottom: clamp(2rem, 10vh, 4rem);
+  padding-bottom: env(safe-area-inset-bottom);
+  z-index: 1000;
+  pointer-events: auto;
+}
+.main__action.visible {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+}
+.main__scroll {
+  display: inline-flex;
   flex-direction: column;
-  gap: 2rem;
-  padding: 3rem 1rem;
-  max-width: 900px;
-  margin: 0 auto;
+  align-items: center;
+  color: inherit;
 }
-
-.feature-box {
-  background: white;
-  border-left: 5px solid #0057a0;
-  padding: 1.5rem;
-  box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-  border-radius: 8px;
+.main__scroll-box {
+  width: 2rem;
+  height: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 0.5rem;
 }
-
-.feature-box h2 {
-  margin: 0 0 0.5rem;
+.main__scroll-text {
+  font-size: clamp(0.8rem, 2.5vw, 1rem);
+  color: inherit;
 }
-
-/* 뉴스레터 */
-.newsletter {
-  background-color: #eef4fa;
-  text-align: center;
-  padding: 3rem 1rem;
+.main__action:hover .main__scroll-box {
+  animation: scroll-down 3s infinite;
+}
+@keyframes scroll-down {
+  0%, 100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  35% {
+    transform: translateY(1rem);
+    opacity: 0;
+  }
+  70% {
+    transform: translateY(-1rem);
+    opacity: 0;
+  }
 }
 
 .newsletter form {
   display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  max-width: 400px;
-  margin: 0 auto;
+  justify-content: center;
+  align-items: center;
 }
 
-.newsletter input {
-  padding: 0.75rem;
-  border: 1px solid #ccc;
-  border-radius: 6px;
-  font-size: 1rem;
+.newsletter .input-wrapper {
+  width: fit-content;
+  height: 45px;
+  border-radius: 20px;
+  padding: 5px;
+  box-sizing: content-box;
+  display: flex;
+  align-items: center;
+  background-color: #ececec;
 }
 
-.newsletter button {
-  background-color: #0057a0;
-  color: white;
+.newsletter .icon {
+  width: 30px;
+  fill: #252525;
+  margin-left: 8px;
+  transition: all 0.3s;
+}
+
+.newsletter .input {
+  max-width: 170px;
+  padding-right: 15px;
+  height: 100%;
   border: none;
-  padding: 0.75rem;
-  font-size: 1rem;
-  border-radius: 6px;
+  outline: none;
+  padding-left: 15px;
+  background-color: #ececec;
+  color: black;
+  font-size: 1em;
+}
+.newsletter .input:-webkit-autofill {
+  -webkit-box-shadow: 0 0 0px 1000px #252525 inset;
+  -webkit-text-fill-color: #ffffff;
+}
+
+.newsletter .Subscribe-btn {
+  height: 100%;
+  width: 95px;
+  border: none;
+  border-radius: 15px;
+  color: rgb(255, 255, 255);
   cursor: pointer;
+  background-color: #252525;
+  font-weight: 500;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  transition: all 0.3s;
 }
 
-.newsletter button:hover {
-  background-color: #004078;
+.newsletter .arrow {
+  position: absolute;
+  margin-right: 150px;
+  transition: all 0.3s;
 }
 
-/* 반응형 설정 */
-@media (min-width: 768px) {
-  .features {
-    flex-direction: row;
+.newsletter .input-wrapper:active .icon {
+  transform: scale(1.3);
+}
+
+.newsletter .Subscribe-btn:hover {
+  font-size: 0 !important;
+}
+
+.newsletter .Subscribe-btn:hover .arrow {
+  margin-right: 0;
+  animation: jello-vertical 0.9s both;
+  transform-origin: right;
+}
+
+@keyframes jello-vertical {
+  0%   { transform: scale3d(1,1,1); }
+  30%  { transform: scale3d(0.75,1.25,1); }
+  40%  { transform: scale3d(1.25,0.75,1); }
+  50%  { transform: scale3d(0.85,1.15,1); }
+  65%  { transform: scale3d(1.05,0.95,1); }
+  75%  { transform: scale3d(0.95,1.05,1); }
+  100% { transform: scale3d(1,1,1); }
+}
+
+.newsletter .Subscribe-btn:active {
+  transform: scale(0.9);
+}
+
+/* 모바일 */
+@media (max-width: 768px) {
+  .main__action {
+    top: calc(50% + 7rem);
+    bottom: auto;
+    transform: translateX(-50%) translateY(-50%);
+  }
+  .content {
+    padding: 0 0.5rem;
+  }
+  .content h1 { font-size: 1.8rem; }
+  .content h2 { font-size: 1.4rem; }
+  .content p  { font-size: 1rem;   }
+}
+
+/* 다크모드 */
+@media (prefers-color-scheme: dark) {
+  html, body, #svelte, #app {
+    background: #121212;
+    color: #e0e0e0;
+  }
+  .snap-section {
+    background: #1e1e1e;
+  }
+  .content {
+    color: #e0e0e0;
+  }
+    .main__scroll-text {
+    color: #e0e0e0;
+  }
+  .main__scroll-box svg path:nth-of-type(2) {
+    fill: currentColor !important;
+  }
+  .newsletter .input-wrapper {
+    background-color: #2b2b2c !important;
+  }
+  .newsletter .input {
+    background-color: #2b2b2c !important;
+    color: #f9f9f9 !important;
+  }
+  .newsletter .Subscribe-btn {
+    background-color: #f9f9f9 !important;
+    color: #292524 !important;
+  }
+  .newsletter .arrow path {
+    stroke: #2b2b2c !important;
+  }
+  .newsletter .icon {
+    fill: #f9f9f9;
   }
 }
