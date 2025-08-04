@@ -15,7 +15,7 @@
 ## ⚙️ 작동 방식
 
 1. **수집 대상 확인**  
-   아래 게시된 기관 웹사이트 (업데이트 희망 시 연락 부탁드립니다.)
+   아래 게시된 기관 웹사이트
 
 2. **콘텐츠 수집 및 정리**  
    - 제목, 요약, 발행일, 원문 링크 정리
@@ -55,7 +55,8 @@
 
 ## 🏢 지원 사이트
 
-현재 알리미가 지원 중인 주요 공공기관 사이트입니다.
+현재 알리미가 지원 중인 주요 공공기관 사이트입니다.  
+(업데이트 희망 시 meowning@kumoh.ac.kr로 연락 부탁드립니다.)
 
 | 번호 | 기관명                 | 수집 가능 여부 | 비고                              |
 |------|---------------------|------------|--------------------------------|
@@ -78,7 +79,8 @@
 ### Backend
 <div>
   <img src="https://img.shields.io/badge/python-3776AB?style=for-the-badge&logo=python&logoColor=white"> 
-  <img src="https://img.shields.io/badge/flask-000000?style=for-the-badge&logo=flask&logoColor=white">
+  <img src="https://img.shields.io/badge/FastAPI-009485.svg?style=for-the-badge&logo=fastapi&logoColor=white">
+  <img src="https://img.shields.io/badge/Go-%2300ADD8.svg?style=for-the-badge&logo=go&logoColor=white">
   <img src="https://img.shields.io/badge/mysql-4479A1?style=for-the-badge&logo=mysql&logoColor=white">
 </div>
 
