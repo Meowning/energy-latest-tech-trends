@@ -4,10 +4,6 @@
 </script>
 
 <Router>
-  <nav>
-    <Link to="/">홈</Link>
-  </nav>
-
   <Route path="/">
     <Home />
   </Route>
