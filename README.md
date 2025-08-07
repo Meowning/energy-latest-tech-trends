@@ -2,12 +2,12 @@
 > _여러 기관에서 발행하는 국내·외 에너지 정책 및 산업 동향 소식을 매일 빠르게 받아보세요._
 
 ## 💼 개요
-**에너지 최신기술동향 알리미**는 공개된 공공기관 웹사이트에서 에너지 관련 **산업기술 최신 동향 자료**를 자동으로 수집하여, 이용자의 이메일로 발송해주는 시스템입니다!
+**에너지 최신기술동향 알리미**는 공개된 공공기관 웹사이트에서 에너지 관련 **산업기술 최신 동향 자료**를 자동으로 수집하여, 이용자의 이메일로 발송해주는 RPA 시스템입니다!
 
 ## 📌 핵심 지원 기능
 - 여러 기관의 **최신 간행물, 보도자료** 등 자동 수집
 - 수집한 자료를 **제목 + 내용 + 표지 사진 + pdf 파일 + 원문 링크** 형태로 정리
-- 이용자가 사전에 입력한 이메일 주소로 자동 발송
+- 이용자가 사전에 입력한 이메일 주소로 자동 발송 (추후 다른 경로 추가 예정)
 - OCR 및 요약 서비스 (예정)
 
 
@@ -81,7 +81,7 @@
   <img src="https://img.shields.io/badge/python-3776AB?style=for-the-badge&logo=python&logoColor=white"> 
   <img src="https://img.shields.io/badge/FastAPI-009485.svg?style=for-the-badge&logo=fastapi&logoColor=white">
   <img src="https://img.shields.io/badge/Go-%2300ADD8.svg?style=for-the-badge&logo=go&logoColor=white">
-  <img src="https://img.shields.io/badge/mysql-4479A1?style=for-the-badge&logo=mysql&logoColor=white">
+  <img src="https://img.shields.io/badge/SQLite-%2307405e.svg?style=for-the-badge&logo=sqlite&logoColor=white">
 </div>
 
 ### Frontend
