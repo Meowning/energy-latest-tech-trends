@@ -22,4 +22,3 @@ fastapi==0.100.0
 uvicorn[standard]==0.22.0
 ocrmypdf>=16.10.4
 git+https://github.com/haven-jeon/PyKoSpacing.git#egg=pykospacing
-git+https://github.com/ssut/py-hanspell.git@refs/pull/54/head#egg=py-hanspell

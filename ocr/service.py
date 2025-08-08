@@ -21,7 +21,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 from konlpy.tag import Okt
 import kss
 from pykospacing import Spacing
-from hanspell import spell_checker
 
 # — 전역 초기화 —————————————————————————————————————————————
 spacing = Spacing()                                                      # O(1)
@@ -70,10 +69,10 @@ def is_noise_line(line: str) -> bool:
 
 # 문장 분리: O(N + S) where N = total chars, S = number of sentences
 def split_korean_sentences(text: str) -> list[str]:
-    # 1) KSS로 문장 분리
     try:
         raws = kss.split_sentences(
-            text, backend='mecab',
+            text,
+            backend='mecab',
             use_quotes_brackets_processing=False,
             ignore_quotes_or_brackets=True
         )
@@ -85,19 +84,10 @@ def split_korean_sentences(text: str) -> list[str]:
         sent = raw.strip()
         if not sent or is_noise_line(sent):
             continue
-
-        # 2) 한 문장씩 맞춤법·띄어쓰기 교정
-        try:
-            result = spell_checker.check(sent)
-            sent = result.checked
-        except Exception as e:
-            print("맞춤법 검사 실패:", e)
-            # 검사 실패 시 원본 문장 그대로 사용
-            pass
-
         results.append(sent)
 
     return results
+
 
 # OCR 및 공백 복원: O(P + R) where P = pages, R = restored text length
 def perform_ocr_pages(file_bytes: bytes) -> str:
