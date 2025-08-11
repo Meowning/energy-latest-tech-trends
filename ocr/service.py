@@ -437,7 +437,7 @@ def generate_summary(text: str) -> str:
     input_ids = tokenizer.encode(base_prompt + clean, return_tensors="pt", add_special_tokens=True)
     if input_ids.shape[1] <= 450:
         with torch.no_grad():
-            outs = t5_model.generate(input_ids, **DECODING)
+            outs = model.generate(input_ids, **DECODING)
         return tokenizer.decode(outs[0], skip_special_tokens=True)
 
     carry = ""
@@ -451,7 +451,7 @@ def generate_summary(text: str) -> str:
         chunk_prompt = base_prompt + (carry + " " if carry else "") + chunk_text
         ids = tokenizer.encode(chunk_prompt, return_tensors="pt", add_special_tokens=True)
         with torch.no_grad():
-            outs = t5_model.generate(ids, **DECODING)
+            outs = model.generate(ids, **DECODING)
         out_text = tokenizer.decode(outs[0], skip_special_tokens=True)
 
         carry_ids = tokenizer.encode(out_text, add_special_tokens=False)
