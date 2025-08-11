@@ -16,7 +16,7 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install -U pip
-          pip install "huggingface_hub>=0.24"
+          pip install "huggingface_hub>=0.24" hf_transfer
 
       - name: Download model snapshot
         env:
