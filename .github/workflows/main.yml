@@ -1,0 +1,40 @@
+name: Fetch HF model
+on:
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install -U pip
+          pip install "huggingface_hub>=0.24"
+
+      - name: Download model snapshot
+        env:
+          HF_HUB_ENABLE_HF_TRANSFER: "1"
+        run: |
+          huggingface-cli download eenzeenee/t5-small-korean-summarization \
+            --local-dir t5_kor \
+            --local-dir-use-symlinks False
+          ls -al t5_kor | head
+
+      - name: Pack
+        run: |
+          tar -czf t5_kor.tar.gz t5_kor
+          du -h t5_kor.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: t5_kor
+          path: t5_kor.tar.gz
+          if-no-files-found: error
