@@ -10,60 +10,79 @@ import numpy as np
 import cv2
 import fitz  # PyMuPDF
 import pytesseract
-from pytesseract import Output
 
 from fastapi import FastAPI, File, UploadFile, BackgroundTasks, HTTPException, Form
 from sqlalchemy import create_engine, Column, Integer, Text, DateTime, Enum as SqlEnum
 from sqlalchemy.orm import declarative_base, sessionmaker
 
+import sys
+import math
 import torch
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 import ocrmypdf
 
 from sentence_transformers import SentenceTransformer
-from sklearn.cluster import AgglomerativeClustering, KMeans
+from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.metrics import silhouette_score
 
 import kss
 from pykospacing import Spacing
 
 
 # =========================
-# 전역 설정 / 초기화
+# 전역 설정
 # =========================
-# 모델/토크나이저
-tokenizer = AutoTokenizer.from_pretrained("eenzeenee/t5-small-korean-summarization")
-model = AutoModelForSeq2SeqLM.from_pretrained("eenzeenee/t5-small-korean-summarization")
-# CPU-only 성능: Linear만 dynamic int8 양자화
+def _offline() -> bool:
+    v = (os.getenv("TRANSFORMERS_OFFLINE", "0"), os.getenv("HF_HUB_OFFLINE", "0"))
+    return any(str(x).lower() in ("1", "true", "yes") for x in v)
+
+
+def load_t5():
+    repo = os.getenv("T5_REMOTE_ID", "eenzeenee/t5-small-korean-summarization")
+    off = _offline()
+    tok = AutoTokenizer.from_pretrained(repo, use_fast=True, local_files_only=off)
+    mdl = AutoModelForSeq2SeqLM.from_pretrained(repo, local_files_only=off)
+    return tok, mdl
+
+
+tokenizer, model = load_t5()
+
 try:
-    model = torch.quantization.quantize_dynamic(
-        model, {torch.nn.Linear}, dtype=torch.qint8
-    )
+    model = torch.quantization.quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
 except Exception as e:
     print("[warn] dynamic quantization skipped:", e)
-model.eval()
+model.eval().to("cpu")
 
-# SBERT 임베딩
-sbert = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+# CPU 추론 스레드 최적화
+try:
+    torch.set_num_threads(max(1, os.cpu_count() or 2))
+    torch.set_num_interop_threads(1)
+except Exception:
+    pass
 
-# 띄어쓰기 복원
+
+def load_sbert():
+    repo = os.getenv("SBERT_REMOTE_ID", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+    off = _offline()
+    return SentenceTransformer(repo, device="cpu")
+
+
+sbert = load_sbert()
 spacing = Spacing()
 
-# DB
+# DB 설정
 DB_PATH = os.getenv("DB_PATH", "./ocr.db")
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "1"))
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
-
 doc_semaphore = threading.Semaphore(MAX_WORKERS)
 app = FastAPI()
 
 
 # =========================
-# Enum / ORM
+# ORM
 # =========================
 class StatusEnum(str, Enum):
     PENDING = "PENDING"
@@ -75,7 +94,7 @@ class Document(Base):
     __tablename__ = "documents"
     id = Column(Integer, primary_key=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
-    source = Column(Text, nullable=False)  # 자유 텍스트로 저장
+    source = Column(Text, nullable=False)
     ocr_text = Column(Text, nullable=False)
     extractive_summary = Column(Text, nullable=False)
     abstractive_summary = Column(Text, nullable=True)
@@ -86,255 +105,94 @@ Base.metadata.create_all(bind=engine)
 
 
 # =========================
-# 레이아웃 인지 유틸 (단수 자동 판별 + 재흐름 + 본문/비본문)
+# 전처리 패턴
 # =========================
-_END_PUNCT = set(".!?…」』）》〉)]”’\"")
-_HYPHEN = "-"
+CLEAN_KEYWORDS = r'(FAX|Mail|메일|E[- ]?mail|이메일|주소|초점|목차)'
 
-def _estimate_line_tol(word_tuples):
-    hs = [ (y1 - y0) for (x0,y0,x1,y1,_) in word_tuples ]
-    if not hs:
-        return float(os.getenv("LINE_Y_TOL", "4.0"))
-    med = float(np.median(hs))
-    return max(3.0, min(12.0, float(os.getenv("LINE_Y_TOL_FACTOR", "0.7")) * med))
+def clean_full_text(text: str) -> str:
+    print(f"[전처리] 원본 텍스트 길이: {len(text)}")
 
-def _choose_k_by_silhouette(x_centers, page_w, max_k=4):
-    X = np.array(x_centers, dtype=np.float32).reshape(-1, 1)
-    n = len(X)
-    if n < 30:
-        return 1, np.zeros(n, dtype=int), [float(X.mean())]
+    # 1. 특수공백/개행 정리
+    t = text.replace('\r', '\n').replace('\u00a0', ' ').replace('\u200b', ' ')
 
-    best_k, best_lbls, best_centers, best_score = 1, np.zeros(n, dtype=int), [float(X.mean())], -1
-    min_sep_ratio = float(os.getenv("COLUMN_SEP_RATIO", "0.12"))
-    min_sil = float(os.getenv("SILHOUETTE_MIN", "0.15"))
-    max_k = int(os.getenv("COLUMN_MAX_K", str(max_k)))
-    max_k = max(1, min(max_k, 6))
+    # 2. 앞쪽 키워드 컷 (문서 앞 35%까지만 검색)
+    search_limit = int(len(t) * 0.35)
+    matches = list(re.finditer(CLEAN_KEYWORDS, t[:search_limit], flags=re.IGNORECASE))
+    if matches:
+        last_match = matches[-1]
+        print(f"[전처리] 키워드 '{last_match.group()}' 발견, 위치: {last_match.start()}")
+        t = t[last_match.end():]
 
-    idx = np.arange(n)
-    if n > 400:
-        sample_idx = np.random.RandomState(0).choice(idx, 400, replace=False)
-        Xs = X[sample_idx]
-    else:
-        sample_idx = idx
-        Xs = X
+    # 3. 마지막 마침표 뒤 삭제
+    last_dot = t.rfind('.')
+    if last_dot != -1:
+        print(f"[전처리] 마지막 마침표 위치: {last_dot}")
+        t = t[:last_dot+1]
 
-    for k in range(1, max_k+1):
-        if k == 1:
-            km = KMeans(n_clusters=1, n_init=10, random_state=0).fit(Xs)
-            centers = sorted(km.cluster_centers_.flatten().tolist())
-            labels_full = np.zeros(n, dtype=int)
-            score = -1
-        else:
-            km = KMeans(n_clusters=k, n_init=10, random_state=0).fit(Xs)
-            centers = sorted(km.cluster_centers_.flatten().tolist())
-            diffs = np.diff(sorted(centers))
-            sep_ratio = float(np.min(diffs)) / max(1.0, float(page_w)) if len(diffs) else 0.0
-            s = silhouette_score(Xs, km.labels_) if len(set(km.labels_)) > 1 else -1.0
-            if sep_ratio < min_sep_ratio or s < min_sil:
-                continue
-            score = s
-            labels_full = KMeans(n_clusters=k, n_init=10, random_state=0).fit(X).labels_
+    # 4. "사진 + 숫자" 패턴 제거 (붙어있든 띄어있든 모두)
+    t = re.sub(r'사진\s*\d+', '', t, flags=re.IGNORECASE)
 
-        if score > best_score:
-            best_k, best_lbls, best_centers, best_score = k, labels_full, centers, score
+    # 5. 단독 알파벳 1글자 삭제
+    t = re.sub(r'\b[a-zA-Z]\b', '', t)
 
-    counts = np.bincount(best_lbls, minlength=best_k)
-    if best_k > 1:
-        ratios = counts / counts.sum()
-        if (ratios < float(os.getenv("MIN_CLUSTER_RATIO", "0.15"))).any():
-            # 작은 클러스터를 이웃으로 병합
-            centers_arr = np.array(best_centers)
-            for sidx, r in enumerate(ratios):
-                if r >= float(os.getenv("MIN_CLUSTER_RATIO", "0.15")):
-                    continue
-                dists = np.abs(centers_arr - centers_arr[sidx])
-                dists[sidx] = np.inf
-                tgt = int(np.argmin(dists))
-                best_lbls[best_lbls==sidx] = tgt
-            uniq = sorted(set(best_lbls))
-            remap = {u:i for i,u in enumerate(uniq)}
-            best_lbls = np.array([remap[v] for v in best_lbls], dtype=int)
-            best_k = len(uniq)
-            best_centers = [ float(np.mean([x_centers[i] for i in np.where(best_lbls==c)[0]])) for c in range(best_k) ]
+    # 6. 공백 제거
+    t = re.sub(r'\s+', '', t)
 
-    order = np.argsort(best_centers)
-    remap = { old:i for i, old in enumerate(order) }
-    best_lbls = np.array([ remap[l] for l in best_lbls ], dtype=int)
-    best_centers = [ best_centers[o] for o in order ]
-    return best_k, best_lbls, best_centers
+    # 7. 허용문자 외 삭제
+    t = re.sub(r'[^0-9A-Za-z가-힣\.\,\!\?…]', '', t)
 
-def _sort_words_reading_order(words):
-    return sorted(words, key=lambda w: (round(w[1], 1), w[0]))
-
-def _merge_lines(words, y_tol):
-    if not words:
-        return ""
-    lines, cur, prev_y = [], [], None
-    for w in _sort_words_reading_order(words):
-        x0,y0,x1,y1,txt = w
-        t = str(txt).strip()
-        if not t:
-            continue
-        if prev_y is None or abs(y0 - prev_y) <= y_tol:
-            cur.append((x0, t))
-        else:
-            if cur:
-                lines.append(cur)
-            cur = [(x0, t)]
-        prev_y = y0
-    if cur:
-        lines.append(cur)
-
-    def join_line(line):
-        line = sorted(line, key=lambda t: t[0])
-        return " ".join([t for _, t in line])
-
-    raw_lines = [ join_line(ln).strip() for ln in lines if ln ]
-    merged = []
-    for ln in raw_lines:
-        if not merged:
-            merged.append(ln); continue
-        prev = merged[-1]
-        if prev.endswith(_HYPHEN):
-            merged[-1] = prev[:-1] + ln.lstrip()
-            continue
-        if prev and prev[-1] not in _END_PUNCT:
-            if re.match(r"^(\d+\.|\*+|-+|•|\([가-힣A-Za-z0-9]\))\s+", ln):
-                merged.append(ln)
-            else:
-                merged[-1] = prev + " " + ln.lstrip()
-        else:
-            merged.append(ln)
-    return "\n".join(merged)
-
-def reflow_adaptive_cols(word_tuples, page_w):
-    if not word_tuples:
-        return ""
-    x_centers = [ (x0+x1)/2.0 for (x0,y0,x1,y1,_) in word_tuples ]
-    k, labels, centers = _choose_k_by_silhouette(x_centers, page_w, max_k=4)
-    y_tol = _estimate_line_tol(word_tuples)
-
-    col_texts = []
-    for c in range(k):
-        col_words = [ w for w,l in zip(word_tuples, labels) if l==c ]
-        col_words = _sort_words_reading_order(col_words)
-        col_texts.append(_merge_lines(col_words, y_tol))
-    return "\n".join([t for t in col_texts if t])
-
-def classify_page_simple(word_tuples, page_w, page_h, page_text=""):
-    n_words = len(word_tuples)
-    if n_words < int(os.getenv("NONBODY_MIN_WORDS", "20")):
-        return "nonbody"
-
-    area_sum = 0.0
-    for (x0,y0,x1,y1,_) in word_tuples:
-        area_sum += max(0.0, (x1-x0)) * max(0.0, (y1-y0))
-    coverage = area_sum / max(1.0, page_w*page_h)
-
-    if coverage < float(os.getenv("NONBODY_COVERAGE", "0.01")) and n_words < 80:
-        return "nonbody"
-
-    if page_text and re.search(r"(목차|차례|참고문헌|참고자료|부록|Contents|Index|References)", page_text):
-        return "nonbody"
-
-    return "body"
+    print(f"[전처리] 전처리 후 길이: {len(t)}")
+    return t
 
 
 # =========================
-# OCR + 클린업 + 스페이싱
+# OCR + 전처리
 # =========================
-def perform_ocr_pages(file_bytes: bytes):
-    """
-    - PDF: ocrmypdf → (단어좌표) reflow_adaptive_cols → 텍스트
-    - 이미지: tesseract image_to_data → reflow_adaptive_cols → 텍스트
-    - 그 뒤 URL/이메일/전화번호/긴 숫자 정리 → 특문 필터 → pykospacing
-    """
+def perform_ocr_pages(file_bytes: bytes) -> str:
     pages = []
-
     if file_bytes.startswith(b"%PDF"):
+        print("[OCR] PDF 파일 감지")
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
             tf.write(file_bytes)
             in_path = tf.name
         out_path = in_path.replace(".pdf", "_ocr.pdf")
         try:
-            print("[3] OCRmyPDF 실행")
             ocrmypdf.ocr(
-                in_path, out_path,
-                language="kor", skip_text=True, force_ocr=False,
+                in_path, out_path, language="kor", skip_text=True, force_ocr=False,
                 color_conversion_strategy="RGB", output_type="pdf",
                 deskew=True, remove_background=True, jobs=int(os.getenv("OCR_JOBS", "2"))
             )
             doc = fitz.open(out_path)
             for i in range(doc.page_count):
-                page = doc[i]
-                page_w, page_h = page.rect.width, page.rect.height
-                wds = page.get_text("words")  # x0,y0,x1,y1,"word", block, line, word
-                if not wds:
-                    pages.append(page.get_text("text"))
-                    continue
-                words_simple = [(x0,y0,x1,y1,w) for (x0,y0,x1,y1,w,*_) in wds if str(w).strip()]
-                rough_text = page.get_text("text")
-                _page_type = classify_page_simple(words_simple, page_w, page_h, rough_text)
-                flowed = reflow_adaptive_cols(words_simple, page_w)
-                pages.append(flowed if flowed.strip() else rough_text)
+                text_page = doc[i].get_text("text")
+                print(f"[OCR] 페이지 {i+1} 텍스트 길이: {len(text_page)}")
+                pages.append(text_page)
             doc.close()
         finally:
             for p in (in_path, out_path):
-                try: os.remove(p)
-                except: pass
-
+                try:
+                    os.remove(p)
+                except:
+                    pass
     else:
+        print("[OCR] 이미지 파일 감지")
         arr = np.frombuffer(file_bytes, np.uint8)
         img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         if img is None or img.size == 0:
             raise HTTPException(400, "지원되지 않는 파일 형식")
-        print("[3] OCR 처리 중: 이미지 파일")
+        ocr_text = pytesseract.image_to_string(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), lang="kor")
+        print(f"[OCR] 이미지 OCR 결과 길이: {len(ocr_text)}")
+        pages.append(ocr_text)
 
-        df = pytesseract.image_to_data(
-            cv2.cvtColor(img, cv2.COLOR_BGR2RGB),
-            lang="kor",
-            config="--psm 1",
-            output_type=Output.DATAFRAME
-        )
-        df = df.dropna(subset=["text"])
-        min_conf = float(os.getenv("OCR_MIN_CONF", "0"))
-        df = df[df.conf.astype(float) >= min_conf]
-
-        page_w, page_h = img.shape[1], img.shape[0]
-        word_tuples = [
-            (int(x), int(y), int(x)+int(w), int(y)+int(h), str(t))
-            for x,y,w,h,t in zip(df.left, df.top, df.width, df.height, df.text)
-            if str(t).strip()
-        ]
-        flowed = reflow_adaptive_cols(word_tuples, page_w)
-        pages.append(flowed)
-
-    # 1) 병합
-    combined = "\n".join(pages)
-
-    # 2) URL 제거
-    combined = re.sub(r'(?:https?://|www\.)[A-Za-z0-9\-._~:/?#\[\]@!$&\'()*+,;=%]+', ' ', combined)
-    # 3) 이메일 제거
-    combined = re.sub(r'\b[\w\.-]+@[\w\.-]+\.\w+\b', ' ', combined)
-    # 4) 전화번호/숫자 제거
-    combined = re.sub(r'(?i)(?:TEL|FAX)[\s\-\.:]*\+?82?[-.\s]?\d{1,2}(?:[-.\s]?\d{3,4}){2}', ' ', combined)
-    combined = re.sub(r'(?<!\d)(?:\d{2,3}[-.\s]?\d{3,4}[-.\s]?\d{4})(?!\d)', ' ', combined)
-    combined = re.sub(r'(?<!\d)\d{9,11}(?!\d)', ' ', combined)
-    combined = re.sub(r'\d{12,}', ' ', combined)
-
-    # 5) 공백/특수문자 정리
-    combined = re.sub(r'[\r\t]+', ' ', combined)
-    combined = re.sub(r'[^0-9A-Za-z가-힣\.\,\!\?\s]', ' ', combined)
-    combined = re.sub(r'\s+', ' ', combined).strip()
+    raw_text = "".join(pages)
+    combined = clean_full_text(raw_text)
 
     os.makedirs("./processed", exist_ok=True)
     with open("./processed/before_spacing.txt", "w", encoding="utf-8") as f:
         f.write(combined)
 
-    # 6) 띄어쓰기 복원
-    print("[공백 복원 시작]")
     spaced = spacing(combined)
-    print("[공백 복원 완료]")
+    print(f"[Spacing] 띄어쓰기 적용 후 길이: {len(spaced)}")
 
     with open("./processed/after_spacing.txt", "w", encoding="utf-8") as f:
         f.write(spaced)
@@ -343,7 +201,7 @@ def perform_ocr_pages(file_bytes: bytes):
 
 
 # =========================
-# 문장 분리(KSS) + 노이즈 필터
+# 문장 분리 + 요약
 # =========================
 def is_noise_line(line: str) -> bool:
     t = line.strip()
@@ -351,119 +209,214 @@ def is_noise_line(line: str) -> bool:
         return True
     if re.fullmatch(r"\d+(?:\s*\d+)*", t):
         return True
-    if re.search(r"\b(vol\.?\s*\d+|TEL|FAX|E[- ]?mail|월호|목차)\b", t, flags=re.IGNORECASE):
+    if re.search(r"\b(vol\.?|TEL|FAX|E[- ]?mail|202\d|July|월|호기)\b", t, re.IGNORECASE):
         return True
     return False
 
+
 def split_korean_sentences(text: str) -> list[str]:
-    MAX_CHARS = 8000
-    chunks = [text[i:i+MAX_CHARS] for i in range(0, len(text), MAX_CHARS)] or [""]
+    # 0. 소숫점 보호 (14.25 → 14<dot>25)
+    protected = re.sub(r'(\d)\.(\d)', r'\1<dot>\2', text)
 
-    raws = []
-    for ch in chunks:
-        try:
-            parts = kss.split_sentences(
-                ch,
-                use_quotes_brackets_processing=False,
-                ignore_quotes_or_brackets=True
-            )
-        except Exception:
-            parts = re.split(r'(?<=[\.!\?])\s*', ch)
-        raws.extend(parts)
+    try:
+        raws = kss.split_sentences(protected, use_quotes_brackets_processing=False, ignore_quotes_or_brackets=True)
+    except Exception:
+        raws = re.split(r'(?<=[\.!\?…])\s*', protected)
 
-    results = []
-    for raw in raws:
-        sent = raw.strip()
-        if not sent:
-            continue
-        if is_noise_line(sent):
-            continue
-        results.append(sent)
-    return results
+    # 1. 복원 (<dot> → .)
+    raws = [r.replace('<dot>', '.') for r in raws]
+
+    # 2. 잡음 제거
+    sents = [s.strip() for s in raws if s.strip() and not is_noise_line(s)]
+    print(f"[문장 분리] 문장 개수: {len(sents)}")
+    return sents
 
 
-# =========================
-# 요약 파이프라인
-# =========================
-def preprocess_text(text: str) -> str:
+def _preprocess_for_embed(text: str) -> str:
     txt = re.sub(r'https?://\S+|www\.\S+', ' ', text)
     txt = re.sub(r'\b[\w\.-]+@[\w\.-]+\.\w+\b', ' ', txt)
     txt = re.sub(r"[\r\n\t]+", ' ', txt)
-    txt = re.sub(r"[^0-9A-Za-z가-힣\.\?!\s]", ' ', txt)
+    txt = re.sub(r"[^0-9A-Za-z가-힣\s\.\?!]", ' ', txt)
     txt = re.sub(r"\s+", ' ', txt).strip()
-    tokens = re.findall(r"[0-9A-Za-z가-힣]{2,}", txt)
-    return " ".join(tokens)
+    return txt
+
 
 def extractive_summary(sent_list: list[str], num_sentences: int = 3) -> str:
     if not sent_list:
         return ""
-    proc = [preprocess_text(s) for s in sent_list]
+    proc = [_preprocess_for_embed(s) for s in sent_list]
     embs = sbert.encode(proc, convert_to_numpy=True, show_progress_bar=False)
-    n = min(num_sentences, len(embs))
+    n = max(1, min(num_sentences, len(embs)))
     clust = AgglomerativeClustering(n_clusters=n, metric="cosine", linkage="average")
     labels = clust.fit_predict(embs)
-    summary = []
+    picks = []
     for lbl in sorted(set(labels)):
         idxs = np.where(labels == lbl)[0]
         cent = embs[idxs].mean(axis=0)
         sims = cosine_similarity([cent], embs[idxs])[0]
         best = idxs[sims.argmax()]
-        summary.append((best, sent_list[best]))
-    summary.sort(key=lambda x: x[0])
-    return "\n".join(f"[{i+1}] {s}" for i, s in summary)
+        picks.append((best, sent_list[best]))
+    picks.sort(key=lambda x: x[0])
+    result = "\n".join(f"[{i+1}] {s}" for i, s in picks)
+    print(f"[추출 요약] {len(picks)}문장 선택")
+    return result
+
 
 def _chunk_tokens(tokens: list[int], chunk_size: int, overlap: int = 32):
     if chunk_size <= 0:
-        yield tokens; return
+        yield tokens
+        return
     i, n = 0, len(tokens)
     while i < n:
         j = min(i + chunk_size, n)
         yield tokens[i:j]
-        if j >= n: break
+        if j >= n:
+            break
         i = max(0, j - overlap)
 
-def generate_summary(text: str) -> str:
-    clean = re.sub(r'\s+', ' ', text).strip()
-    base_prompt = "summarize: "
+
+# -------------------------
+# 생성 요약(속도↑, 진행률, 3문장 마침표) 보조함수
+# -------------------------
+def _token_len(txt: str) -> int:
+    return tokenizer.encode(txt, add_special_tokens=True, return_tensors="pt").shape[1]
+
+def _normalize_periods(txt: str) -> str:
+    t = re.sub(r"\s+", " ", txt).strip()
+    t = re.sub(r"(?<![\.?!])\s*(다|이다|합니다|했습니다|했다|한다)\s*$", r"\1.", t)
+    t = re.sub(r"\.{2,}", ".", t)
+    return t
+
+def _to_exact_n_sentences(txt: str, n: int) -> list[str]:
+    protected = re.sub(r"(\d)\.(\d)", r"\1<dot>\2", txt)
+    parts = [p.strip() for p in re.split(r"(?<=\.)\s+", protected) if p.strip()]
+    parts = [p.replace("<dot>", ".") for p in parts]
+    if not parts:
+        return []
+    while len(parts) < n:
+        parts[-1] = parts[-1].rstrip(".") + "."
+        parts.append(parts[-1])
+    parts = parts[:n]
+    parts = [p if p.endswith(".") else p + "." for p in parts]
+    return parts
+
+def _decode_generate(input_ids, decoding_kwargs):
+    with torch.inference_mode():
+        outs = model.generate(input_ids, **decoding_kwargs)
+    return tokenizer.decode(outs[0], skip_special_tokens=True)
+
+def _summarize_stuff(base_text: str, lines: int, decoding_kwargs: dict) -> str:
+    prompt = f"Summarize the following text into exactly {lines} sentences in Korean. Use periods only: "
+    ids = tokenizer.encode(prompt + base_text, return_tensors="pt", add_special_tokens=True)
+    cand = _decode_generate(ids, decoding_kwargs)
+    cand = _normalize_periods(cand)
+    parts = _to_exact_n_sentences(cand, lines)
+    return "\n".join(parts) if parts else ""
+
+def _refine_step(summary: str, chunk_text: str, lines: int, decoding_kwargs: dict) -> str:
+    prompt = (
+        f"You are refining an existing Korean summary into exactly {lines} sentences using periods only.\n"
+        f"CURRENT SUMMARY:\n{summary}\n\n"
+        f"NEW CONTEXT (keep only key facts):\n{chunk_text}\n\n"
+        f"Provide an improved Korean summary (exactly {lines} sentences, with periods only)."
+    )
+    ids = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=True)
+    cand = _decode_generate(ids, decoding_kwargs)
+    return _normalize_periods(cand)
+
+def _precompress_ultra_long(sent_list: list[str], max_tokens: int) -> list[str]:
+    kept = []
+    cur = ""
+    step = 1
+    if len(sent_list) > 3000:
+        step = 2
+    for s in sent_list[::step]:
+        nxt = (cur + " " + s).strip()
+        if _token_len(nxt) > max_tokens:
+            break
+        cur = nxt
+        kept.append(s)
+    return kept if kept else sent_list[: max(1, int(len(sent_list) * 0.1))]
+
+def _summarize_refine(base_text: str, lines: int, decoding_kwargs: dict) -> str:
+    # 큰 청크 / 작은 오버랩 → 호출 횟수 감소(속도↑)
+    CHUNK_TOKENS = int(os.getenv("REFINE_CHUNK_TOKENS", "768"))
+    OVERLAP = int(os.getenv("REFINE_CHUNK_OVERLAP", "24"))
+
+    all_tokens = tokenizer.encode(base_text, add_special_tokens=True)
+    chunks = list(_chunk_tokens(all_tokens, CHUNK_TOKENS, overlap=OVERLAP))
+    total_chunks = len(chunks)
+
+    # 1) 첫 청크: Stuff
+    first_text = tokenizer.decode(chunks[0], skip_special_tokens=True)
+    summary = _summarize_stuff(first_text, lines, decoding_kwargs)
+
+    # 2) 나머지 청크: refine + 진행률 한 줄 갱신
+    for i, tok_chunk in enumerate(chunks[1:], start=2):
+        sys.stdout.write(f"\r[Refine 진행률] {i}/{total_chunks} 청크 처리 중...")
+        sys.stdout.flush()
+
+        chunk_text = tokenizer.decode(tok_chunk, skip_special_tokens=True)
+
+        # 프롬프트 길이 제어: NEW CONTEXT는 512토큰까지만 사용
+        c_ids = tokenizer.encode(chunk_text, add_special_tokens=False)
+        if len(c_ids) > 512:
+            c_ids = c_ids[:512]
+            chunk_text = tokenizer.decode(c_ids, skip_special_tokens=True)
+
+        summary = _refine_step(summary, chunk_text, lines, decoding_kwargs)
+
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+    parts = _to_exact_n_sentences(summary, lines)
+    return "\n".join(parts) if parts else ""
+
+def generate_summary(sent_list: list[str], lines: int = 3) -> str:
+    if not sent_list:
+        return ""
+
+    # 초장문 사전 압축 (속도 핵심)
+    ULTRA_LONG_TOKENS = int(os.getenv("ULTRA_LONG_TOKENS", "8000"))
+    PRECOMPRESS_TO = int(os.getenv("PRECOMPRESS_TO_TOKENS", "4000"))
+
+    base_text_full = re.sub(r"\s+", " ", " ".join(sent_list)).strip()
+    in_len_full = _token_len(base_text_full)
+
+    if in_len_full > ULTRA_LONG_TOKENS:
+        reduced_sents = _precompress_ultra_long(sent_list, PRECOMPRESS_TO)
+        base_text = re.sub(r"\s+", " ", " ".join(reduced_sents)).strip()
+        print(f"[사전압축] {in_len_full}→{_token_len(base_text)} 토큰, 문장 {len(sent_list)}→{len(reduced_sents)}")
+    else:
+        base_text = base_text_full
+
+    # 디코딩(가볍게)
     DECODING = dict(
-        max_new_tokens=int(os.getenv("T5_MAX_NEW_TOKENS", "80")),
-        num_beams=1,
+        max_new_tokens=int(os.getenv("T5_MAX_NEW_TOKENS", "120")),
+        min_new_tokens=int(os.getenv("T5_MIN_NEW_TOKENS", "45")),
+        num_beams=int(os.getenv("T5_NUM_BEAMS", "2")),
         do_sample=False,
         use_cache=True,
         no_repeat_ngram_size=3,
         early_stopping=True
     )
 
-    input_ids = tokenizer.encode(base_prompt + clean, return_tensors="pt", add_special_tokens=True)
-    if input_ids.shape[1] <= 450:
-        with torch.no_grad():
-            outs = model.generate(input_ids, **DECODING)
-        return tokenizer.decode(outs[0], skip_special_tokens=True)
+    # Stuff/Refine 스위칭
+    STUFF_MAX_INPUT = int(os.getenv("STUFF_MAX_INPUT_TOKENS", "550"))
+    in_len = _token_len(base_text)
 
-    carry = ""
-    carry_max_tokens = 120
-    all_tokens = tokenizer.encode(clean, add_special_tokens=True)
-    C_SIZE = 320
-    out_text = None
-
-    for tok_chunk in _chunk_tokens(all_tokens, C_SIZE, overlap=32):
-        chunk_text = tokenizer.decode(tok_chunk, skip_special_tokens=True)
-        chunk_prompt = base_prompt + (carry + " " if carry else "") + chunk_text
-        ids = tokenizer.encode(chunk_prompt, return_tensors="pt", add_special_tokens=True)
-        with torch.no_grad():
-            outs = model.generate(ids, **DECODING)
-        out_text = tokenizer.decode(outs[0], skip_special_tokens=True)
-
-        carry_ids = tokenizer.encode(out_text, add_special_tokens=False)
-        if len(carry_ids) > carry_max_tokens:
-            carry_ids = carry_ids[:carry_max_tokens]
-        carry = tokenizer.decode(carry_ids, skip_special_tokens=True)
-
-    return carry if carry else (out_text or "")
+    if in_len <= STUFF_MAX_INPUT:
+        cand = _summarize_stuff(base_text, lines, DECODING)
+        print(f"[생성 요약] Stuff 사용 (입력 토큰 {in_len})")
+        return cand
+    else:
+        cand = _summarize_refine(base_text, lines, DECODING)
+        print(f"[생성 요약] Refine 사용 (입력 토큰 {in_len})")
+        return cand
 
 
 # =========================
-# 백그라운드 생성 태스크
+# 백그라운드 태스크 & API
 # =========================
 def background_generation(doc_id: int):
     doc_semaphore.acquire()
@@ -474,61 +427,43 @@ def background_generation(doc_id: int):
             return
         doc.status = StatusEnum.PARTIAL
         db.commit()
-        doc.abstractive_summary = generate_summary(doc.ocr_text)
+        sents = [s for s in (doc.ocr_text or "").split("\n") if s.strip()]
+        doc.abstractive_summary = generate_summary(sents, lines=3)
         doc.status = StatusEnum.DONE
+        print(f"[생성 요약] 완료: {doc.abstractive_summary}")
         db.commit()
     finally:
         doc_semaphore.release()
         db.close()
 
 
-# =========================
-# API
-# =========================
 @app.post("/process")
-async def process(
-    background_tasks: BackgroundTasks,
-    source: str = Form(...),
-    file: UploadFile = File(...),
-    extractive_sentences: int = Form(3),
-    do_generation: bool = Form(False)
-):
-    print(f"[1] 요청 수신: source={source}")
+async def process(background_tasks: BackgroundTasks,
+                  source: str = Form(...),
+                  file: UploadFile = File(...),
+                  extractive_sentences: int = Form(3),
+                  do_generation: bool = Form(False)):
     data = await file.read()
-    print(f"[2] 파일 수신 완료 ({len(data)} bytes)")
     spaced = perform_ocr_pages(data)
     sents = split_korean_sentences(spaced)
-    os.makedirs(".", exist_ok=True)
-    with open("example.txt", "w", encoding="utf-8") as f:
+    with open("./example.txt", "w", encoding="utf-8") as f:
         f.write("\n".join(sents))
-    print(f"[4] example.txt에 {len(sents)}개 문장 저장됨")
-
     extractive = extractive_summary(sents, extractive_sentences)
-    print("[6] 추출적 요약 완료")
-
     db = SessionLocal()
     try:
-        doc = Document(
-            source=source,
-            ocr_text="\n".join(sents),
-            extractive_summary=extractive,
-            status=StatusEnum.PENDING
-        )
+        doc = Document(source=source,
+                       ocr_text="\n".join(sents),
+                       extractive_summary=extractive,
+                       status=StatusEnum.PENDING)
         db.add(doc)
         db.commit()
         db.refresh(doc)
-        print(f"[8] DB 저장 완료: id={doc.id}")
         if do_generation:
-            print(f"[9] 생성적 요약 태스크 예약: id={doc.id}")
             background_tasks.add_task(background_generation, doc.id)
-        print(f"[10] 응답 전송: id={doc.id}")
-        return {
-            "doc_id": doc.id,
-            "extractive_summary": extractive,
-            "generation_started": do_generation
-        }
+        return {"doc_id": doc.id, "extractive_summary": extractive, "generation_started": do_generation}
     finally:
         db.close()
+
 
 @app.get("/status/{doc_id}")
 async def get_status(doc_id: int):
@@ -537,19 +472,18 @@ async def get_status(doc_id: int):
         doc = db.get(Document, doc_id)
         if not doc:
             raise HTTPException(404, "Document not found")
-        return {
-            "doc_id": doc.id,
-            "ocr_text": doc.ocr_text,
-            "extractive_summary": doc.extractive_summary,
-            "abstractive_summary": doc.abstractive_summary,
-            "status": doc.status.value
-        }
+        return {"doc_id": doc.id, "ocr_text": doc.ocr_text,
+                "extractive_summary": doc.extractive_summary,
+                "abstractive_summary": doc.abstractive_summary,
+                "status": doc.status.value}
     finally:
         db.close()
+
 
 @app.get("/health")
 async def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+
 
 if __name__ == "__main__":
     import uvicorn
