@@ -29,7 +29,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 import kss
 from pykospacing import Spacing
 
-
 # =========================
 # 전역 설정
 # =========================
@@ -38,26 +37,64 @@ def _offline() -> bool:
     return any(str(x).lower() in ("1", "true", "yes") for x in v)
 
 
+def _pick_device(env_key: str, default_auto: bool = True) -> str:
+    """
+    env_key로 원하는 디바이스를 받되, 사용 불가하면 안전하게 CPU로 폴백.
+    지원: "cuda", "mps", "cpu". 기본은 자동 감지(cuda>mps>cpu).
+    """
+    want = os.getenv(env_key, "").strip().lower()
+    if want in ("cuda", "gpu"):
+        if torch.cuda.is_available():
+            return "cuda"
+        print(f"[warn] {env_key}=cuda 요청됐지만 CUDA 미사용 → cpu로 폴백")
+        return "cpu"
+    if want == "mps":
+        if torch.backends.mps.is_available() and torch.backends.mps.is_built():
+            return "mps"
+        print(f"[warn] {env_key}=mps 요청됐지만 MPS 미사용 → cpu로 폴백")
+        return "cpu"
+    if want == "cpu":
+        return "cpu"
+
+    if default_auto:
+        if torch.cuda.is_available():
+            return "cuda"
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() and torch.backends.mps.is_built():
+            return "mps"
+        return "cpu"
+    return "cpu"
+
+
 def load_t5():
     repo = os.getenv("T5_REMOTE_ID", "eenzeenee/t5-small-korean-summarization")
     off = _offline()
+    device = _pick_device("T5_DEVICE")  # auto: cuda>mps>cpu
+
     tok = AutoTokenizer.from_pretrained(repo, use_fast=True, local_files_only=off)
     mdl = AutoModelForSeq2SeqLM.from_pretrained(repo, local_files_only=off)
+
+    # CPU 전용 동적 양자화 (GPU/MPS에서는 금지)
+    want_quant = os.getenv("T5_QUANTIZE", "1").lower() in ("1", "true", "yes")
+    if device == "cpu" and want_quant:
+        try:
+            mdl = torch.quantization.quantize_dynamic(mdl, {torch.nn.Linear}, dtype=torch.qint8)
+            print("[info] T5 dynamic quantization applied (CPU)")
+        except Exception as e:
+            print("[warn] dynamic quantization skipped:", e)
+
+    mdl.eval().to(device)
+    print(f"[info] T5 loaded on {device.upper()} (repo={repo})")
     return tok, mdl
 
 
 tokenizer, model = load_t5()
 
+# CPU 추론 스레드 최적화 (GPU/MPS이면 무시)
 try:
-    model = torch.quantization.quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
-except Exception as e:
-    print("[warn] dynamic quantization skipped:", e)
-model.eval().to("cpu")
-
-# CPU 추론 스레드 최적화
-try:
-    torch.set_num_threads(max(1, os.cpu_count() or 2))
-    torch.set_num_interop_threads(1)
+    if next(model.parameters()).device.type == "cpu":
+        torch.set_num_threads(max(1, os.cpu_count() or 2))
+        torch.set_num_interop_threads(1)
+        print(f"[info] torch threads set: {torch.get_num_threads()} / interop 1")
 except Exception:
     pass
 
@@ -65,7 +102,12 @@ except Exception:
 def load_sbert():
     repo = os.getenv("SBERT_REMOTE_ID", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
     off = _offline()
-    return SentenceTransformer(repo, device="cpu")
+    device = _pick_device("SBERT_DEVICE")  # 기본 T5와 동일한 자동 선택
+
+    # SentenceTransformer는 device 인자로 CPU/GPU 전환
+    model = SentenceTransformer(repo, device=device, cache_folder=None)  # cache는 기본 경로 사용
+    print(f"[info] SBERT loaded on {device.upper()} (repo={repo})")
+    return model
 
 
 sbert = load_sbert()
@@ -107,8 +149,10 @@ Base.metadata.create_all(bind=engine)
 # =========================
 # 전처리 패턴
 # =========================
-CLEAN_KEYWORDS = r'(FAX|Mail|메일|E[- ]?mail|이메일|주소|초점|목차)'
-
+CLEAN_KEYWORDS = (
+    r"(FAX|Mail|메일|E[- ]?mail|이메일|주소|초점|목차|"
+    r"제\s*\d{4}\s*\d{1,2}\s*\d{4}\.(?:0[1-9]|1[0-2])\.(?:0[1-9]|[12]\d|3[01])\.?)"
+)
 def clean_full_text(text: str) -> str:
     print(f"[전처리] 원본 텍스트 길이: {len(text)}")
 
@@ -165,7 +209,7 @@ def perform_ocr_pages(file_bytes: bytes) -> str:
             doc = fitz.open(out_path)
             for i in range(doc.page_count):
                 text_page = doc[i].get_text("text")
-                print(f"[OCR] 페이지 {i+1} 텍스트 길이: {len(text_page)}")
+                # print(f"[OCR] 페이지 {i+1} 텍스트 길이: {len(text_page)}")
                 pages.append(text_page)
             doc.close()
         finally:
@@ -185,6 +229,8 @@ def perform_ocr_pages(file_bytes: bytes) -> str:
         pages.append(ocr_text)
 
     raw_text = "".join(pages)
+    with open("./processed/ocr.txt", "w", encoding="utf-8") as f:
+        f.write(raw_text)
     combined = clean_full_text(raw_text)
 
     os.makedirs("./processed", exist_ok=True)
@@ -201,7 +247,7 @@ def perform_ocr_pages(file_bytes: bytes) -> str:
 
 
 # =========================
-# 문장 분리 + 요약
+# 문장 분리 + 요약(추출/임베딩)
 # =========================
 def is_noise_line(line: str) -> bool:
     t = line.strip()
@@ -221,7 +267,7 @@ def split_korean_sentences(text: str) -> list[str]:
     try:
         raws = kss.split_sentences(protected, use_quotes_brackets_processing=False, ignore_quotes_or_brackets=True)
     except Exception:
-        raws = re.split(r'(?<=[\.!\?…])\s*', protected)
+        raws = re.split(r'(?<=[\.\!\?…])\s*', protected)
 
     # 1. 복원 (<dot> → .)
     raws = [r.replace('<dot>', '.') for r in raws]
@@ -234,7 +280,7 @@ def split_korean_sentences(text: str) -> list[str]:
 
 def _preprocess_for_embed(text: str) -> str:
     txt = re.sub(r'https?://\S+|www\.\S+', ' ', text)
-    txt = re.sub(r'\b[\w\.-]+@[\w\.-]+\.\w+\b', ' ', txt)
+    txt = re.sub(r"\b[\w\.-]+@[\w\.-]+\.\w+\b", ' ', txt)
     txt = re.sub(r"[\r\n\t]+", ' ', txt)
     txt = re.sub(r"[^0-9A-Za-z가-힣\s\.\?!]", ' ', txt)
     txt = re.sub(r"\s+", ' ', txt).strip()
@@ -257,7 +303,7 @@ def extractive_summary(sent_list: list[str], num_sentences: int = 3) -> str:
         best = idxs[sims.argmax()]
         picks.append((best, sent_list[best]))
     picks.sort(key=lambda x: x[0])
-    result = "\n".join(f"[{i+1}] {s}" for i, s in picks)
+    result = "\n".join(f"[{i+1}] {s}" for i, s in enumerate([p[1] for p in picks]))
     print(f"[추출 요약] {len(picks)}문장 선택")
     return result
 
@@ -276,54 +322,214 @@ def _chunk_tokens(tokens: list[int], chunk_size: int, overlap: int = 32):
 
 
 # -------------------------
-# 생성 요약(속도↑, 진행률, 3문장 마침표) 보조함수
+# 생성 요약 유틸(형식/중복)
 # -------------------------
 def _token_len(txt: str) -> int:
     return tokenizer.encode(txt, add_special_tokens=True, return_tensors="pt").shape[1]
 
+
 def _normalize_periods(txt: str) -> str:
     t = re.sub(r"\s+", " ", txt).strip()
-    t = re.sub(r"(?<![\.?!])\s*(다|이다|합니다|했습니다|했다|한다)\s*$", r"\1.", t)
+    t = re.sub(r"(?<![\.!?])\s*(다|이다|합니다|했습니다|했다|한다)\s*$", r"\1.", t)
     t = re.sub(r"\.{2,}", ".", t)
     return t
 
-def _to_exact_n_sentences(txt: str, n: int) -> list[str]:
-    protected = re.sub(r"(\d)\.(\d)", r"\1<dot>\2", txt)
-    parts = [p.strip() for p in re.split(r"(?<=\.)\s+", protected) if p.strip()]
-    parts = [p.replace("<dot>", ".") for p in parts]
-    if not parts:
-        return []
-    while len(parts) < n:
-        parts[-1] = parts[-1].rstrip(".") + "."
-        parts.append(parts[-1])
-    parts = parts[:n]
-    parts = [p if p.endswith(".") else p + "." for p in parts]
-    return parts
+
+def _dedup_keep_order(seq: list[str]) -> list[str]:
+    seen = set(); out = []
+    for s in seq:
+        key = re.sub(r"\s+", " ", s).strip()
+        if key and key not in seen:
+            seen.add(key); out.append(key)
+    return out
+
+
+def _parse_numbered_or_periods(cand: str, n: int) -> list[str]:
+    # (a) 번호 목록 형식
+    lines = [x.strip() for x in cand.splitlines() if x.strip()]
+    items = []
+    for ln in lines:
+        ln = re.sub(r'^\s*(?:\d+[\.\)]|[-•·∙ㆍ‧])\s*', '', ln).strip()
+        if ln:
+            items.append(ln)
+    items = _dedup_keep_order(items)
+    if len(items) >= n:
+        return [(s if s.endswith('.') else s + '.') for s in items[:n]]
+
+    # (b) 마침표 기준
+    protected = re.sub(r"(\d)\.(\d)", r"\1<dot>\2", cand)
+    parts = [p.strip().replace("<dot>", ".") for p in re.split(r"(?<=\.)\s+", protected) if p.strip()]
+    parts = _dedup_keep_order(parts)
+    if len(parts) >= n:
+        return parts[:n]
+
+    # (c) 세미콜론/쉼표/접속어 보조 분할
+    tmp = parts[:] if parts else [cand]
+    clauses = []
+    for t in tmp:
+        chunks = re.split(r';\s*', t)
+        if len(chunks) == 1:
+            chunks = re.split(r',\s*(?=(그리고|또한|따라서|하지만|그러나)\b)', t)
+        for c in chunks:
+            c = c.strip(' ,;')
+            if len(c) >= 8:
+                clauses.append(c if c.endswith('.') else c + '.')
+            if len(clauses) >= n:
+                break
+        if len(clauses) >= n:
+            break
+    return _dedup_keep_order(clauses)[:n]
+
+
+def _ensure_n_distinct_sentences(cand: str, n: int, decoding_kwargs: dict, outline: list[str]) -> list[str]:
+    parts = _parse_numbered_or_periods(_normalize_periods(cand), n)
+    if len(parts) >= n:
+        return parts[:n]
+
+    # 1차: 짧은 재생성(현행 유지)
+    prompt = (
+        f"아래 요약을 바탕으로 서로 다른 핵심 포인트 {n}가지를 한 문장씩 써라.\n"
+        f"출력 형식: '1. ...' 줄바꿈, 각 문장은 마침표로 끝낼 것. 중복 금지.\n"
+        f"모든 문장은 서로 다른 정보를 담아 반드시 {n}문장을 출력할 것.\n\n"
+        f"[요약]\n{cand}"
+    )
+    ids = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=True)
+    with torch.inference_mode():
+        outs = model.generate(ids, **decoding_kwargs)
+    retry = tokenizer.decode(outs[0], skip_special_tokens=True)
+    parts = _parse_numbered_or_periods(_normalize_periods(retry), n)
+    parts = _dedup_keep_order(parts)
+
+    # 2차: 남는 칸은 outline에서 채우기 (복붙 금지)
+    if len(parts) < n:
+        for s in outline:
+            ss = _normalize_periods(s)
+            if ss and ss not in parts:
+                parts.append(ss if ss.endswith('.') else ss + '.')
+            if len(parts) >= n:
+                break
+
+    return parts[:n]
+
+# -------------------------
+# 디코딩/프롬프트 구성
+# -------------------------
+def _decoding_cfg():
+    return dict(
+        max_new_tokens=int(os.getenv("T5_MAX_NEW_TOKENS", "150")),
+        min_new_tokens=int(os.getenv("T5_MIN_NEW_TOKENS", "40")),
+        num_beams=int(os.getenv("T5_NUM_BEAMS", "2")),
+        do_sample=False,
+        use_cache=True,
+        no_repeat_ngram_size=int(os.getenv("NO_REPEAT_NGRAM", "4")),
+        repetition_penalty=float(os.getenv("REPETITION_PENALTY", "1.1")),
+        early_stopping=True,
+    )
+
 
 def _decode_generate(input_ids, decoding_kwargs):
     with torch.inference_mode():
         outs = model.generate(input_ids, **decoding_kwargs)
     return tokenizer.decode(outs[0], skip_special_tokens=True)
 
-def _summarize_stuff(base_text: str, lines: int, decoding_kwargs: dict) -> str:
-    prompt = f"Summarize the following text into exactly {lines} sentences in Korean. Use periods only: "
-    ids = tokenizer.encode(prompt + base_text, return_tensors="pt", add_special_tokens=True)
-    cand = _decode_generate(ids, decoding_kwargs)
-    cand = _normalize_periods(cand)
-    parts = _to_exact_n_sentences(cand, lines)
-    return "\n".join(parts) if parts else ""
 
-def _refine_step(summary: str, chunk_text: str, lines: int, decoding_kwargs: dict) -> str:
+# -------------------------
+# 전역 아웃라인(임베딩 기반 대표 문장) & 적응형 청크
+# -------------------------
+def _build_global_outline(sent_list: list[str], max_items: int = 10) -> list[str]:
+    if not sent_list:
+        return []
+    sents = sent_list[:4000]  # 안전장치
+    proc = [_preprocess_for_embed(s) for s in sents]
+    embs = sbert.encode(proc, convert_to_numpy=True, show_progress_bar=False)
+
+    k = min(max_items, max(3, int(len(embs) ** 0.5)))  # √N 수준
+    clust = AgglomerativeClustering(n_clusters=k, metric="cosine", linkage="average")
+    labels = clust.fit_predict(embs)
+
+    picks = []
+    for lbl in sorted(set(labels)):
+        idxs = np.where(labels == lbl)[0]
+        cent = embs[idxs].mean(axis=0)
+        sims = cosine_similarity([cent], embs[idxs])[0]
+        best = idxs[sims.argmax()]
+        picks.append((best, sents[best]))
+    picks.sort(key=lambda x: x[0])
+    return [x[1] for x in picks]
+
+
+def _adaptive_chunk_params(total_tokens: int) -> tuple[int, int]:
+    target_steps = int(os.getenv("REFINE_TARGET_STEPS", "24"))
+    chunk = max(384, min(1024, total_tokens // max(1, target_steps)))
+    overlap = 48 if chunk <= 640 else 32
+    return chunk, overlap
+
+
+# -------------------------
+# Stuff/Refine 본체 (Outline 주입)
+# -------------------------
+def _summarize_stuff_with_outline(base_text: str, outline: list[str], lines: int, decoding_kwargs: dict) -> str:
+    outline_text = "\n".join(f"- {s}" for s in outline[:12])
     prompt = (
-        f"You are refining an existing Korean summary into exactly {lines} sentences using periods only.\n"
-        f"CURRENT SUMMARY:\n{summary}\n\n"
-        f"NEW CONTEXT (keep only key facts):\n{chunk_text}\n\n"
-        f"Provide an improved Korean summary (exactly {lines} sentences, with periods only)."
+        f"다음 텍스트를 한국어로 서로 다른 {lines}개의 핵심 문장으로 요약하라.\n"
+        f"각 문장은 15~40자, 정보 중복 금지. 전역 윤곽을 우선 반영.\n"
+        f"출력 형식: '1. ...' 줄바꿈, 마침표로 끝낼 것.\n"
+        f"모든 문장은 서로 다른 핵심 정보를 담아야 하며, 반드시 {lines}문장을 모두 작성할 것.\n"
+        f"동일하거나 유사한 내용의 문장은 금지하며, 중복 시 다른 내용으로 대체할 것.\n\n"
+        f"[전역 윤곽]\n{outline_text}\n\n"
+        f"[본문]\n{base_text}"
     )
     ids = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=True)
     cand = _decode_generate(ids, decoding_kwargs)
-    return _normalize_periods(cand)
+    parts = _ensure_n_distinct_sentences(cand, lines, decoding_kwargs, outline)
+    return "\n".join(parts)
 
+
+def _summarize_refine_with_outline(full_text: str, outline: list[str], lines: int) -> str:
+    total_tokens = _token_len(full_text)
+    CHUNK_TOKENS, OVERLAP = _adaptive_chunk_params(total_tokens)
+    decoding_kwargs = _decoding_cfg()
+
+    all_tokens = tokenizer.encode(full_text, add_special_tokens=True)
+    chunks = list(_chunk_tokens(all_tokens, CHUNK_TOKENS, overlap=OVERLAP))
+    total_chunks = len(chunks)
+
+    # 1) 첫 청크: Stuff(+Outline)
+    first_text = tokenizer.decode(chunks[0], skip_special_tokens=True)
+    summary = _summarize_stuff_with_outline(first_text, outline, lines, decoding_kwargs)
+
+    # 2) 이후 청크: Refine(+Outline) + 진행률
+    outline_text = "\n".join(f"- {s}" for s in outline[:12])
+    for i, tok_chunk in enumerate(chunks[1:], start=2):
+        sys.stdout.write(f"\r[Refine 진행률] {i}/{total_chunks} 청크 처리 중...")
+        sys.stdout.flush()
+
+        chunk_text = tokenizer.decode(tok_chunk, skip_special_tokens=True)
+        c_ids = tokenizer.encode(chunk_text, add_special_tokens=False)
+        if len(c_ids) > 640:
+            c_ids = c_ids[:640]
+            chunk_text = tokenizer.decode(c_ids, skip_special_tokens=True)
+
+        prompt = (
+            f"전역 윤곽을 유지하며 현재 요약을 새로운 컨텍스트로 보강하라.\n"
+            f"결과는 서로 다른 {lines}문장, 각 15~40자, 중복 금지.\n"
+            f"출력 형식: '1. ...' 줄바꿈, 마침표로 끝낼 것.\n\n"
+            f"[전역 윤곽]\n{outline_text}\n\n"
+            f"[현재 요약]\n{summary}\n\n"
+            f"[새 컨텍스트]\n{chunk_text}"
+        )
+        ids = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=True)
+        cand = _decode_generate(ids, decoding_kwargs)
+        parts = _ensure_n_distinct_sentences(cand, lines, decoding_kwargs, outline)
+        summary = "\n".join(parts)
+
+    sys.stdout.write("\n"); sys.stdout.flush()
+    return summary
+
+
+# -------------------------
+# (비상용) 초장문 압축 유틸
+# -------------------------
 def _precompress_ultra_long(sent_list: list[str], max_tokens: int) -> list[str]:
     kept = []
     cur = ""
@@ -338,81 +544,40 @@ def _precompress_ultra_long(sent_list: list[str], max_tokens: int) -> list[str]:
         kept.append(s)
     return kept if kept else sent_list[: max(1, int(len(sent_list) * 0.1))]
 
-def _summarize_refine(base_text: str, lines: int, decoding_kwargs: dict) -> str:
-    # 큰 청크 / 작은 오버랩 → 호출 횟수 감소(속도↑)
-    CHUNK_TOKENS = int(os.getenv("REFINE_CHUNK_TOKENS", "768"))
-    OVERLAP = int(os.getenv("REFINE_CHUNK_OVERLAP", "24"))
 
-    all_tokens = tokenizer.encode(base_text, add_special_tokens=True)
-    chunks = list(_chunk_tokens(all_tokens, CHUNK_TOKENS, overlap=OVERLAP))
-    total_chunks = len(chunks)
-
-    # 1) 첫 청크: Stuff
-    first_text = tokenizer.decode(chunks[0], skip_special_tokens=True)
-    summary = _summarize_stuff(first_text, lines, decoding_kwargs)
-
-    # 2) 나머지 청크: refine + 진행률 한 줄 갱신
-    for i, tok_chunk in enumerate(chunks[1:], start=2):
-        sys.stdout.write(f"\r[Refine 진행률] {i}/{total_chunks} 청크 처리 중...")
-        sys.stdout.flush()
-
-        chunk_text = tokenizer.decode(tok_chunk, skip_special_tokens=True)
-
-        # 프롬프트 길이 제어: NEW CONTEXT는 512토큰까지만 사용
-        c_ids = tokenizer.encode(chunk_text, add_special_tokens=False)
-        if len(c_ids) > 512:
-            c_ids = c_ids[:512]
-            chunk_text = tokenizer.decode(c_ids, skip_special_tokens=True)
-
-        summary = _refine_step(summary, chunk_text, lines, decoding_kwargs)
-
-    sys.stdout.write("\n")
-    sys.stdout.flush()
-
-    parts = _to_exact_n_sentences(summary, lines)
-    return "\n".join(parts) if parts else ""
-
+# -------------------------
+# 공개 함수: generate_summary (Outline 우선, 압축은 비상용)
+# -------------------------
 def generate_summary(sent_list: list[str], lines: int = 3) -> str:
     if not sent_list:
         return ""
 
-    # 초장문 사전 압축 (속도 핵심)
-    ULTRA_LONG_TOKENS = int(os.getenv("ULTRA_LONG_TOKENS", "8000"))
-    PRECOMPRESS_TO = int(os.getenv("PRECOMPRESS_TO_TOKENS", "4000"))
-
     base_text_full = re.sub(r"\s+", " ", " ".join(sent_list)).strip()
     in_len_full = _token_len(base_text_full)
 
-    if in_len_full > ULTRA_LONG_TOKENS:
-        reduced_sents = _precompress_ultra_long(sent_list, PRECOMPRESS_TO)
-        base_text = re.sub(r"\s+", " ", " ".join(reduced_sents)).strip()
-        print(f"[사전압축] {in_len_full}→{_token_len(base_text)} 토큰, 문장 {len(sent_list)}→{len(reduced_sents)}")
+    # 비상: 정말 큰 입력만 사전 압축 (기본 40k 이상)
+    ULTRA_LONG_EMERGENCY = int(os.getenv("ULTRA_LONG_EMERGENCY_TOKENS", "40000"))
+    if in_len_full > ULTRA_LONG_EMERGENCY:
+        print(f"[경고] 입력 {in_len_full} 토큰: 비상 축약 수행")
+        budget = int(os.getenv("PRECOMPRESS_TO_TOKENS", "8000"))
+        reduced = _precompress_ultra_long(sent_list, budget)
+        base_text = re.sub(r"\s+", " ", " ".join(reduced)).strip()
     else:
         base_text = base_text_full
 
-    # 디코딩(가볍게)
-    DECODING = dict(
-        max_new_tokens=int(os.getenv("T5_MAX_NEW_TOKENS", "120")),
-        min_new_tokens=int(os.getenv("T5_MIN_NEW_TOKENS", "45")),
-        num_beams=int(os.getenv("T5_NUM_BEAMS", "2")),
-        do_sample=False,
-        use_cache=True,
-        no_repeat_ngram_size=3,
-        early_stopping=True
-    )
+    # 전역 아웃라인(대표 문장) 추출 → 모든 단계에 주입
+    outline = _build_global_outline(sent_list, max_items=int(os.getenv("OUTLINE_ITEMS", "10")))
 
-    # Stuff/Refine 스위칭
+    # 길이 기준으로 Stuff/Refine 스위칭
     STUFF_MAX_INPUT = int(os.getenv("STUFF_MAX_INPUT_TOKENS", "550"))
-    in_len = _token_len(base_text)
-
-    if in_len <= STUFF_MAX_INPUT:
-        cand = _summarize_stuff(base_text, lines, DECODING)
-        print(f"[생성 요약] Stuff 사용 (입력 토큰 {in_len})")
-        return cand
+    if _token_len(base_text) <= STUFF_MAX_INPUT:
+        out = _summarize_stuff_with_outline(base_text, outline, lines, _decoding_cfg())
+        print(f"[생성 요약] Stuff(+Outline) 사용 (입력 토큰 {_token_len(base_text)})")
+        return out
     else:
-        cand = _summarize_refine(base_text, lines, DECODING)
-        print(f"[생성 요약] Refine 사용 (입력 토큰 {in_len})")
-        return cand
+        out = _summarize_refine_with_outline(base_text, outline, lines)
+        print(f"[생성 요약] Refine(+Outline) 사용 (입력 토큰 {_token_len(base_text)})")
+        return out
 
 
 # =========================
