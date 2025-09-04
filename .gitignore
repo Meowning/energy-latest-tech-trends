@@ -17,5 +17,11 @@ backend/files/processed/
 backend/files/failed/
 backend/files/incoming/*
 
+# 메일서버
+mail/mail-logs
+mail/mail-data
+mail/mail-state
+mail/config
+
 # 환경변수 파일
 .env

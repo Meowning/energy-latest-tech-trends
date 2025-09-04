@@ -1,13 +1,15 @@
-version: "3.8"
-
 services:
-  mail:
+  mailserver:
     image: ghcr.io/docker-mailserver/docker-mailserver:latest
-    container_name: dms
+    container_name: mailserver
     hostname: ${HOSTNAME_FQDN}
     domainname: ${DOMAIN}
     env_file:
       - ./mail/.env
+    environment:
+      - OVERRIDE_HOSTNAME=${HOSTNAME_FQDN}
+      - POSTMASTER_ADDRESS=postmaster@${DOMAIN}
+      - REPORT_RECIPIENT=support@${DOMAIN}
     ports:
       - "25:25"      # SMTP
       - "587:587"    # Submission (STARTTLS)
@@ -21,16 +23,14 @@ services:
       - /etc/letsencrypt:/etc/letsencrypt:ro
     restart: unless-stopped
     stop_grace_period: 1m
-    cap_add:
-      - NET_ADMIN
-      - SYS_PTRACE
-    networks:
-      - mailnet
-
+    cap_add: [ "NET_ADMIN" ]
     healthcheck:
       test: "ss --listening --ipv4 --tcp | grep --silent ':smtp' || exit 1"
       timeout: 3s
       retries: 0
+    networks:
+      mailnet:
+        aliases: [ "mail", "${HOSTNAME_FQDN}" ]
 
 networks:
   mailnet:

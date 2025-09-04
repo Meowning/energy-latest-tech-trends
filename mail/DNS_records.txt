@@ -1,20 +1,15 @@
-# A
-energy.meowning.kr.            300 IN A    122.199.76.193
+# A (메일 서버)
+energy.meowning.kr.            300 IN A     122.199.76.193
 
-# MX (도메인 수신)
+# MX (수신 도메인: energy.meowning.kr)
 energy.meowning.kr.            300 IN MX 10 energy.meowning.kr.
 
-# SPF (발신 허용)
+# SPF (발신: energy.meowning.kr)
 energy.meowning.kr.            300 IN TXT "v=spf1 a mx ip4:122.199.76.193 ~all"
 
-# DKIM (selector: mail) — setup_commands.sh 실행 후 생성되는 mail.txt 전체를 값으로
+# DKIM (selector: mail) — 아래 파일 생성 후 값 전체 붙여넣기
+#   mail/config/opendkim/keys/energy.meowning.kr/mail.txt
 mail._domainkey.energy.meowning.kr. 300 IN TXT "<<<mail.txt 전체 내용 붙여넣기>>>"
 
-# DMARC (정책은 필요 시 p=reject 등으로 조정)
+# DMARC (정책은 필요 시 p=reject로 상향)
 _dmarc.energy.meowning.kr.     300 IN TXT "v=DMARC1; p=quarantine; rua=mailto:support@energy.meowning.kr; ruf=mailto:support@energy.meowning.kr; fo=1; adkim=s; aspf=s"
-
-# 루트 도메인(meowning.kr)에서도 발신할 경우(선택)
-meowning.kr.                   300 IN TXT "v=spf1 a mx ip4:122.199.76.193 ~all"
-
-# 루트 도메인 수신을 이 서버로 할 경우(선택)
-meowning.kr.                   300 IN MX 10 energy.meowning.kr.
