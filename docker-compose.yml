@@ -1,19 +1,32 @@
 services:
   mailserver:
-    image: ghcr.io/docker-mailserver/docker-mailserver:latest
+    build:
+      context: ./mail
+    image: energy-mail:latest
+    shm_size: "512m"
     container_name: mailserver
     hostname: ${HOSTNAME_FQDN}
     domainname: ${DOMAIN}
     env_file:
+      - ./.env
       - ./mail/.env
     environment:
-      - OVERRIDE_HOSTNAME=${HOSTNAME_FQDN}
-      - POSTMASTER_ADDRESS=postmaster@${DOMAIN}
-      - REPORT_RECIPIENT=support@${DOMAIN}
+      HOSTNAME_FQDN: ${HOSTNAME_FQDN}
+      DOMAIN: ${DOMAIN}
+      OVERRIDE_HOSTNAME: ${HOSTNAME_FQDN}
+      POSTMASTER_ADDRESS: postmaster@${DOMAIN}
+      REPORT_RECIPIENT: support@${DOMAIN}
+      SUPPORT_PASS: ${SUPPORT_PASS}
+      NOREPLY_PASS: ${NOREPLY_PASS}
+      BOOTSTRAP_SMOKE: ${BOOTSTRAP_SMOKE}
+      BOOTSTRAP_VERIFY_CERTS: ${BOOTSTRAP_VERIFY_CERTS}
+      ALLOW_INFO_ALIAS: ${ALLOW_INFO_ALIAS}
+
     ports:
-      - "25:25"      # SMTP
-      - "587:587"    # Submission (STARTTLS)
-      - "993:993"    # IMAPS
+      - "25:25"
+      - "587:587"
+      - "993:993"
+
     volumes:
       - ./mail/mail-data/:/var/mail/
       - ./mail/mail-state/:/var/mail-state/
@@ -21,13 +34,16 @@ services:
       - ./mail/config/:/tmp/docker-mailserver/
       - /etc/localtime:/etc/localtime:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
+
     restart: unless-stopped
     stop_grace_period: 1m
     cap_add: [ "NET_ADMIN" ]
+
     healthcheck:
       test: "ss --listening --ipv4 --tcp | grep --silent ':smtp' || exit 1"
       timeout: 3s
       retries: 0
+
     networks:
       mailnet:
         aliases: [ "mail", "${HOSTNAME_FQDN}" ]
