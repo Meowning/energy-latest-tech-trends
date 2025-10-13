@@ -1,10 +1,7 @@
 services:
-  mailserver:
-    build:
-      context: ./mail
-    image: energy-mail:latest
-    shm_size: "512m"
-    container_name: mailserver
+  dms-bootstrap:
+    build: ./mail/setup
+    container_name: dms-bootstrap
     hostname: ${HOSTNAME_FQDN}
     domainname: ${DOMAIN}
     env_file:
@@ -13,14 +10,40 @@ services:
     environment:
       HOSTNAME_FQDN: ${HOSTNAME_FQDN}
       DOMAIN: ${DOMAIN}
+      SUPPORT_PASS: ${SUPPORT_PASS}
+      NOREPLY_PASS: ${NOREPLY_PASS}
+      ALLOW_INFO_ALIAS: ${ALLOW_INFO_ALIAS}
+      BOOTSTRAP_SMOKE: ${BOOTSTRAP_SMOKE}
+      BOOTSTRAP_VERIFY_CERTS: ${BOOTSTRAP_VERIFY_CERTS}
+    volumes:
+      - ./mail/config/:/tmp/docker-mailserver/:rw
+    restart: "no"
+
+  mailserver:
+    image: ghcr.io/docker-mailserver/docker-mailserver:15.1.0
+    container_name: mailserver
+
+    hostname: ${HOSTNAME_FQDN}
+    domainname: ${DOMAIN}
+
+    env_file:
+      - ./.env
+      - ./mail/.env
+
+    environment:
+      HOSTNAME_FQDN: ${HOSTNAME_FQDN}
+      DOMAIN: ${DOMAIN}
       OVERRIDE_HOSTNAME: ${HOSTNAME_FQDN}
       POSTMASTER_ADDRESS: postmaster@${DOMAIN}
       REPORT_RECIPIENT: support@${DOMAIN}
       SUPPORT_PASS: ${SUPPORT_PASS}
       NOREPLY_PASS: ${NOREPLY_PASS}
-      BOOTSTRAP_SMOKE: ${BOOTSTRAP_SMOKE}
-      BOOTSTRAP_VERIFY_CERTS: ${BOOTSTRAP_VERIFY_CERTS}
       ALLOW_INFO_ALIAS: ${ALLOW_INFO_ALIAS}
+      SSL_TYPE: ${SSL_TYPE:-self-signed}
+
+    depends_on:
+      dms-bootstrap:
+        condition: service_completed_successfully
 
     ports:
       - "25:25"
@@ -31,7 +54,7 @@ services:
       - ./mail/mail-data/:/var/mail/
       - ./mail/mail-state/:/var/mail-state/
       - ./mail/mail-logs/:/var/log/mail/
-      - ./mail/config/:/tmp/docker-mailserver/
+      - ./mail/config/:/tmp/docker-mailserver/:rw
       - /etc/localtime:/etc/localtime:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
 
