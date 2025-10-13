@@ -21,9 +21,11 @@ backend/files/incoming/*
 mail/mail-logs/*
 mail/mail-data/*
 mail/mail-state/*
-mail/config/*
-
-__bootstrap__.sh
+mail/config/opendkim
+mail/config/ssl
+mail/config/dovecot-quotas.cf
+mail/config/postfix-accounts.cf
+mail/config/postfix-virtual.cf
 
 # 환경변수 파일
 .env

@@ -97,3 +97,70 @@
   <img src="https://img.shields.io/badge/github-181717?style=for-the-badge&logo=github&logoColor=white">
   <img src="https://img.shields.io/badge/docker-%230db7ed.svg?style=for-the-badge&logo=docker&logoColor=white"> 
 </div>
+
+
+#
+
+## 세팅 방법
+### 1. 메일서버 세팅 방법
+> _docker-mailserver 이미지를 베이스로 기능을 추가했습니다._
+
+요구사항
+- **포트 번호 :** 25, 587, 993 (tcp) (변경 가능)
+- **구축자 소유 도메인 필요**
+- 호스트 컴퓨터에 **Certbot** 설치 (Let's Encrypt 인증서 사용 시)
+
+#
+
+### ① .env 파일 생성
+- .env.example 파일을 참고하여 작성해주세요
+```
+# ========================= 메일서버 =========================
+# ===== 도메인 / 호스트 =====
+DOMAIN=example.com
+HOSTNAME_FQDN=mail.example.com
+
+# ===== 기본 계정 패스워드 =====
+SUPPORT_PASS=verysecurepassword123!
+NOREPLY_PASS=verysecurepassword123!
+
+# ===== 별칭 옵션 =====
+ALLOW_INFO_ALIAS=1          # 1이면 info@DOMAIN 별칭을 허용 (지원/문의용)
+
+# ===== 부트스트랩 디버그 옵션 =====
+BOOTSTRAP_SMOKE=0           # 1이면 swaks 발신 테스트 수행
+BOOTSTRAP_VERIFY_CERTS=0    # 1이면 openssl 인증서 정보 출력
+
+# ===== letsencrypt 옵션 =====
+USE_LETSENCRYPT=0          # (SSL) 1이면 letsencrypt 사용
+# ===========================================================
+```
+
+### ② 도커 컴포즈 실행
+```docker comopose up```을 통해 실행
+
+```
+
+```
+
+
+### ③ DNS 레코드 설정
+
+### 변수 (치환해서 사용하세요)
+- `<MAIL_DOMAIN>`     : **메일 주소의 도메인**                  _(ex: example.com)_
+- `<MAIL_HOST>`       : **메일서버 FQDN**                       _(ex: mail.example.com)_
+- `<WEB_IP>`          : **웹 서버 IPv4**                        _(웹과 메일 IP가 같다면 둘 다 같은 값을 사용하세요)_
+- `<MAIL_IP>`         : **메일 서버 IPv4**                      _(웹과 메일 IP가 같다면 둘 다 같은 값을 사용하세요)_
+- `<DKIM_TXT>`        : **DKIM TXT 값**                         _(<프로젝트 루트>/mail/config/opendkim/keys/<MAIL_DOMAIN>의 mail.txt 전체 내용)_
+- `<REPORT_EMAIL>`    : **DMARC/TLS-RPT 리포트 수신 메일**       _(ex: postmaster@<MAIL_DOMAIN>)_
+
+### A. 메인 메일 도메인 (<MAIL_DOMAIN>) — 필수 레코드
+| 타입 | 호스트                         | 값/위치                         | 비고                                 |
+|------|------------------------------|-------------------------------|--------------------------------------|
+| A    | `<MAIL_DOMAIN>`                | `<WEB_IP>`                      |                                           |
+| A    | `<MAIL_HOST>`                  | `<MAIL_IP>`                     | 메일서버 FQDN                             |
+| MX   | `<MAIL_DOMAIN>`                | `10 <MAIL_HOST>.`               | **끝에 점(.) 필수**, 10은 우선순위를 뜻함 |
+| TXT  | `<MAIL_DOMAIN>`                | `"v=spf1 mx ~all"`              |                                          |
+| TXT  | `mail._domainkey.<MAIL_DOMAIN>` | `"<DKIM_TXT>" `                | DKIM: mail.txt의 값 전체             |
+| TXT  | `_dmarc.<MAIL_DOMAIN>`         | `"v=DMARC1; p=none; rua=mailto:<REPORT_EMAIL>; adkim=r; aspf=r"` |  |
+
