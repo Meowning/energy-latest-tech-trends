@@ -54,3 +54,7 @@
 3. TLS 협상(STARTTLS 같은...) 시 `mail.example.com`의 인증서 제시
 4. 인증서 CN/SAN이 접속한 FQDN과 일치해야 신뢰
 
+### DKIM 어따씀?
+- 메일을 받으면 수신자가 메일의 From 주소 도메인을 봄.
+- 예를 들어, 내가 `hello@domain.example.com`로 메일을 보냄. (메일 서버는 따로 `mail.example.com`에 있음)
+- 수신 서버는 DNS에서 `mail._domainkey.energy.meowning.kr`을 찾아서 DKIM 키를 검증함.

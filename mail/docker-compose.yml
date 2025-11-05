@@ -1,12 +1,12 @@
 services:
   dms-bootstrap:
-    build: ./mail/setup
+    build: ./setup
     container_name: dms-bootstrap
     hostname: ${HOSTNAME_FQDN}
     domainname: ${DOMAIN}
     env_file:
+      - ../.env
       - ./.env
-      - ./mail/.env
     environment:
       HOSTNAME_FQDN: ${HOSTNAME_FQDN}
       DOMAIN: ${DOMAIN}
@@ -16,7 +16,7 @@ services:
       BOOTSTRAP_SMOKE: ${BOOTSTRAP_SMOKE}
       BOOTSTRAP_VERIFY_CERTS: ${BOOTSTRAP_VERIFY_CERTS}
     volumes:
-      - ./mail/config/:/tmp/docker-mailserver/:rw
+      - ./config/:/tmp/docker-mailserver/:rw
     restart: "no"
 
   mailserver:
@@ -27,8 +27,8 @@ services:
     domainname: ${DOMAIN}
 
     env_file:
+      - ../.env
       - ./.env
-      - ./mail/.env
 
     environment:
       HOSTNAME_FQDN: ${HOSTNAME_FQDN}
@@ -51,10 +51,10 @@ services:
       - "993:993"
 
     volumes:
-      - ./mail/mail-data/:/var/mail/
-      - ./mail/mail-state/:/var/mail-state/
-      - ./mail/mail-logs/:/var/log/mail/
-      - ./mail/config/:/tmp/docker-mailserver/:rw
+      - ./mail-data/:/var/mail/
+      - ./mail-state/:/var/mail-state/
+      - ./mail-logs/:/var/log/mail/
+      - ./config/:/tmp/docker-mailserver/:rw
       - /etc/localtime:/etc/localtime:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
 

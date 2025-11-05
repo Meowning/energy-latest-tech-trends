@@ -16,7 +16,7 @@ DMS_SETUP="/usr/local/bin/setup"
 CFG_DIR="/tmp/docker-mailserver"
 ACCOUNTS_CF="${CFG_DIR}/postfix-accounts.cf"
 VIRTUAL_CF="${CFG_DIR}/postfix-virtual.cf"
-DKIM_DIR="${CFG_DIR}/opendkim/keys/${MAIL_FQDN}"
+DKIM_DIR="${CFG_DIR}/opendkim/keys/${DOMAIN}"
 SSL_DIR="${CFG_DIR}/ssl"
 
 # ===== 계정 정보, 별칭 =====
@@ -74,7 +74,7 @@ safe_add_alias "${ALIAS_POSTMASTER}" "${SUPPORT_USER}"
 
 # ===== (2) DKIM 키 없으면 생성 (서버 FQDN 기준) =====
 if [ ! -f "${DKIM_DIR}/mail.private" ]; then
-  log "[INFO] DKIM 생성 (setup 사용): ${MAIL_FQDN}"
+  log "[INFO] DKIM 생성 (setup 사용): ${DOMAIN}"
   ${DMS_SETUP} config dkim
   printf '\n'
   printf '%b\n' "${YELLOW}${BOLD}==================================================${RESET}"
@@ -89,7 +89,7 @@ if [ ! -f "${DKIM_DIR}/mail.private" ]; then
   printf '\n'
   printf '%b\n' "${YELLOW}${BOLD} 등록 후 'docker compose up -d' 로 다시 실행하세요.${RESET}"
   printf '%b\n' "${YELLOW}${BOLD}==================================================${RESET}"
-  exit 78
+  exit 75
 else
   log "[SKIP] DKIM 이미 존재: ${DKIM_DIR}/mail.private"
 fi
