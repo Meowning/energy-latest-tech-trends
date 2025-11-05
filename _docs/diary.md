@@ -379,3 +379,4 @@ user-patches.sh라고 도커 메일서버 개발자가 자체적으로 사용자
 일단 각 컨테이너 실행은 루트에서 docker compose -f mail/docker-compose.yml --env-file .env up --build 이런 식으로 하면 됨.
 지금 루트의 .env를 바꾸면 하위 .env들에 자동으로 덮어씌워지는 구조이고, 각 컴포즈를 따로 테스트할 수 있음.
 sudo rm -rf ./mail/config 하면 다시 config 할 수 있음.
+지피티는 overlay orchestration이라는데.. (서비스를 프론트, 백, 메일로 분리하고 상위 docker compose에서 docker의 네트워크로 이어주는 거)
