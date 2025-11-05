@@ -1,0 +1,19 @@
+# --- Core dependencies ---
+requests
+beautifulsoup4
+lxml
+tqdm
+pandas
+python-dateutil
+
+# --- Async dependencies ---
+aiohttp
+httpx
+aiofiles
+
+# --- Worker Integration ---
+celery
+redis
+
+# --- 기타 ---
+python-dotenv

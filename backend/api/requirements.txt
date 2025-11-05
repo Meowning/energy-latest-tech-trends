@@ -1,0 +1,9 @@
+# --- API / Server ---
+fastapi==0.100.0
+uvicorn[standard]==0.22.0
+python-multipart>=0.0.5
+SQLAlchemy>=1.4
+
+# --- Messaging / Cache ---
+redis
+celery

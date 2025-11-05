@@ -1,0 +1,15 @@
+# --- Core numeric ---
+numpy<2.0
+pandas
+
+# --- Image/OCR/PDF ---
+pillow>=10.0.1,<11.0.0
+pymupdf==1.23.6
+opencv-python-headless==4.8.0.76
+pytesseract==0.3.10
+ocrmypdf>=16.10.4
+poppler-utils
+
+# --- Worker / Messaging ---
+celery
+redis
