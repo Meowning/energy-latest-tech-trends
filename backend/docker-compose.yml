@@ -1,149 +1,63 @@
-version: "3.9"
-
-name: backend
-
 services:
-  # ===================== Database (MySQL) =====================
-  db:
-    image: mysql:8.0
-    container_name: backend-db
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_PW}
-      MYSQL_DATABASE: ${MYSQL_DB}
-      MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PW}
-    command: --default-authentication-plugin=mysql_native_password
-    ports:
-      - "3306:3306"
-    volumes:
-      - ./db_data:/var/lib/mysql
-    networks:
-      - backend-net
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # ===================== Redis =====================
-  redis:
-    image: redis:7.2-alpine
-    container_name: backend-redis
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    networks:
-      - backend-net
-
-  # ===================== API =====================
   api:
     build:
       context: .
-      dockerfile: ./api/Dockerfile
-    container_name: backend-api
-    env_file:
-      - .env
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_started
+      dockerfile: Dockerfile
+      args:
+        ROLE: api
     ports:
       - "8000:8000"
+    env_file: .env
     volumes:
-      - ./common:/app/common
-      - ./api:/app/api
-    networks:
-      - backend-net
-
-  # ===================== Crawler =====================
-  crawler:
-    build:
-      context: .
-      dockerfile: ./crawler/Dockerfile
-    container_name: backend-crawler
-    env_file:
-      - .env
-    depends_on:
-      db:
-        condition: service_healthy
-    volumes:
-      - ./common:/app/common
-      - ./crawler:/app/crawler
-    networks:
-      - backend-net
-    command: ["python", "-m", "crawler.main"]
-
-  # ===================== Watcher =====================
-  watcher:
-    build:
-      context: .
-      dockerfile: ./watcher/Dockerfile
-    container_name: backend-watcher
-    env_file:
-      - .env
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    volumes:
-      - ./common:/app/common
-      - ./watcher:/app/watcher
       - ./files:/app/files
-    networks:
-      - backend-net
-    command: ["python", "-m", "watcher.run"]
+    depends_on:
+      - redis
 
-  # ===================== OCR Worker =====================
   worker-ocr:
     build:
       context: .
-      dockerfile: ./worker/ocr/Dockerfile
-    container_name: backend-worker-ocr
-    env_file:
-      - .env
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_started
+      dockerfile: Dockerfile
+      args:
+        ROLE: ocr
+    env_file: .env
     volumes:
-      - ./common:/app/common
-      - ./worker/ocr:/app/worker/ocr
       - ./files:/app/files
-    networks:
-      - backend-net
-    command: ["celery", "-A", "worker.ocr.tasks", "worker", "--loglevel=info"]
+    depends_on:
+      - redis
 
-  # ===================== NLP Worker =====================
   worker-nlp:
     build:
       context: .
-      dockerfile: ./worker/nlp/Dockerfile
-    container_name: backend-worker-nlp
-    env_file:
-      - .env
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_started
+      dockerfile: Dockerfile
+      args:
+        ROLE: nlp
+    env_file: .env
     volumes:
-      - ./common:/app/common
-      - ./worker/nlp:/app/worker/nlp
-    networks:
-      - backend-net
-    command: ["celery", "-A", "worker.nlp.tasks", "worker", "--loglevel=info"]
+      - ./files:/app/files
+    depends_on:
+      - redis
 
-# ===================== Volumes =====================
-volumes:
-  db_data:
+  crawler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        ROLE: crawler
+    env_file: .env
+    volumes:
+      - ./files:/app/files
 
-# ===================== Network =====================
-networks:
-  backend-net:
-    driver: bridge
+  watcher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        ROLE: watcher
+    env_file: .env
+    volumes:
+      - ./files:/app/files
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
